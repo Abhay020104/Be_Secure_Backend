@@ -7,6 +7,24 @@ const { FACE_DESCRIPTOR_SIZE } = require("../src/utils/faceMatcher");
 const descriptor = (firstValue = 0) =>
   [firstValue, ...Array.from({ length: FACE_DESCRIPTOR_SIZE - 1 }, () => 0)];
 
+const basisDescriptor = (axisIndex = 0) =>
+  Array.from({ length: FACE_DESCRIPTOR_SIZE }, (_, index) => (index === axisIndex ? 1 : 0));
+
+const unitDescriptor = () => basisDescriptor(0);
+
+const descriptorWithCosineSimilarity = (similarity, axisIndex = 0) =>
+  Array.from({ length: FACE_DESCRIPTOR_SIZE }, (_, index) => {
+    if (index === axisIndex) {
+      return similarity;
+    }
+
+    if (index === axisIndex + 1) {
+      return Math.sqrt(1 - similarity * similarity);
+    }
+
+    return 0;
+  });
+
 const createDoc = (document) => ({
   ...document,
   async save() {
@@ -165,4 +183,198 @@ test("identifyFaces does not promote ambiguous unknown faces when a resident is 
     ),
     true
   );
+});
+
+test("identifyFaces waits for three uncertain unknown hits before alerting", async () => {
+  process.env.FACE_MATCH_THRESHOLD = "0.48";
+  process.env.FACE_MATCH_MARGIN = "0.05";
+  process.env.FACE_MATCH_THRESHOLD_BUFFER = "0.02";
+  process.env.FACE_MATCH_MIN_SIMILARITY = "0.7";
+  process.env.ALERT_CONFIRMATION_MIN_SIMILARITY = "0.55";
+  process.env.ALERT_CONFIRMATION_REQUIRED_HITS = "3";
+
+  const residentModel = createModelStub([
+    {
+      _id: "resident-owned",
+      owner: "user-1",
+      name: "Owner Resident",
+      faceDescriptors: [descriptorWithCosineSimilarity(0.6)],
+      emergencyContacts: ["+911111111111"],
+    },
+  ]);
+  const visitorModel = createModelStub([]);
+  const logModel = createModelStub([]);
+  const alertCalls = [];
+
+  const { identifyFaces } = createIdentificationService({
+    ResidentModel: residentModel,
+    VisitorModel: visitorModel,
+    LogModel: logModel,
+    initiateAlertFn: async (payload) => {
+      alertCalls.push(payload);
+      return {
+        contactsCalled: payload.contacts,
+        responseReceived: false,
+        policeCallInitiated: true,
+      };
+    },
+  });
+
+  const firstResult = await identifyFaces({
+    userId: "user-1",
+    descriptors: [unitDescriptor()],
+  });
+  const secondResult = await identifyFaces({
+    userId: "user-1",
+    descriptors: [unitDescriptor()],
+  });
+  const thirdResult = await identifyFaces({
+    userId: "user-1",
+    descriptors: [unitDescriptor()],
+  });
+
+  assert.equal(firstResult.status, "NoAction");
+  assert.equal(firstResult.alertConfirmation.pending, true);
+  assert.equal(firstResult.alertConfirmation.hits, 1);
+  assert.equal(secondResult.status, "NoAction");
+  assert.equal(secondResult.alertConfirmation.pending, true);
+  assert.equal(secondResult.alertConfirmation.hits, 2);
+  assert.equal(thirdResult.status, "Alert");
+  assert.equal(thirdResult.alertConfirmation.triggered, true);
+  assert.equal(thirdResult.alertConfirmation.hits, 3);
+  assert.equal(alertCalls.length, 1);
+  assert.deepEqual(alertCalls[0].contacts, ["+911111111111"]);
+  assert.equal(logModel.rows.length, 1);
+  assert.equal(logModel.rows[0].status, "Alert");
+});
+
+test("identifyFaces resets pending alert hits when a known resident or visitor is detected", async () => {
+  process.env.FACE_MATCH_THRESHOLD = "0.48";
+  process.env.FACE_MATCH_MARGIN = "0.05";
+  process.env.FACE_MATCH_THRESHOLD_BUFFER = "0.02";
+  process.env.FACE_MATCH_MIN_SIMILARITY = "0.7";
+  process.env.ALERT_CONFIRMATION_MIN_SIMILARITY = "0.55";
+  process.env.ALERT_CONFIRMATION_REQUIRED_HITS = "3";
+
+  const residentModel = createModelStub([
+    {
+      _id: "resident-owned",
+      owner: "user-1",
+      name: "Owner Resident",
+      faceDescriptors: [basisDescriptor(0), descriptorWithCosineSimilarity(0.6, 1)],
+      emergencyContacts: ["+911111111111"],
+    },
+  ]);
+  const visitorModel = createModelStub([
+    {
+      _id: "visitor-owned",
+      owner: "user-1",
+      faceDescriptors: [basisDescriptor(3)],
+      expiresAt: new Date(Date.now() + 60_000),
+      lastSeenWithResident: new Date(),
+    },
+  ]);
+  const logModel = createModelStub([]);
+  const alertCalls = [];
+
+  const { identifyFaces } = createIdentificationService({
+    ResidentModel: residentModel,
+    VisitorModel: visitorModel,
+    LogModel: logModel,
+    initiateAlertFn: async (payload) => {
+      alertCalls.push(payload);
+      return {
+        contactsCalled: payload.contacts,
+        responseReceived: false,
+        policeCallInitiated: true,
+      };
+    },
+  });
+
+  await identifyFaces({
+    userId: "user-1",
+    descriptors: [basisDescriptor(1)],
+  });
+  const secondUnknownResult = await identifyFaces({
+    userId: "user-1",
+    descriptors: [basisDescriptor(1)],
+  });
+  const residentResult = await identifyFaces({
+    userId: "user-1",
+    descriptors: [basisDescriptor(0)],
+  });
+  const resetUnknownResult = await identifyFaces({
+    userId: "user-1",
+    descriptors: [basisDescriptor(1)],
+  });
+  await identifyFaces({
+    userId: "user-1",
+    descriptors: [basisDescriptor(1)],
+  });
+  const visitorResult = await identifyFaces({
+    userId: "user-1",
+    descriptors: [basisDescriptor(3)],
+  });
+  const resetUnknownAfterVisitorResult = await identifyFaces({
+    userId: "user-1",
+    descriptors: [basisDescriptor(1)],
+  });
+
+  assert.equal(secondUnknownResult.status, "NoAction");
+  assert.equal(secondUnknownResult.alertConfirmation.hits, 2);
+  assert.equal(residentResult.status, "Entry");
+  assert.equal(resetUnknownResult.status, "NoAction");
+  assert.equal(resetUnknownResult.alertConfirmation.hits, 1);
+  assert.equal(visitorResult.status, "Entry");
+  assert.equal(resetUnknownAfterVisitorResult.status, "NoAction");
+  assert.equal(resetUnknownAfterVisitorResult.alertConfirmation.hits, 1);
+  assert.equal(alertCalls.length, 0);
+});
+
+test("identifyFaces alerts immediately when unknown similarity is below the confirmation floor", async () => {
+  process.env.FACE_MATCH_THRESHOLD = "0.48";
+  process.env.FACE_MATCH_MARGIN = "0.05";
+  process.env.FACE_MATCH_THRESHOLD_BUFFER = "0.02";
+  process.env.FACE_MATCH_MIN_SIMILARITY = "0.7";
+  process.env.ALERT_CONFIRMATION_MIN_SIMILARITY = "0.55";
+  process.env.ALERT_CONFIRMATION_REQUIRED_HITS = "3";
+
+  const residentModel = createModelStub([
+    {
+      _id: "resident-owned",
+      owner: "user-1",
+      name: "Owner Resident",
+      faceDescriptors: [descriptorWithCosineSimilarity(0.4)],
+      emergencyContacts: ["+911111111111"],
+    },
+  ]);
+  const visitorModel = createModelStub([]);
+  const logModel = createModelStub([]);
+  const alertCalls = [];
+
+  const { identifyFaces } = createIdentificationService({
+    ResidentModel: residentModel,
+    VisitorModel: visitorModel,
+    LogModel: logModel,
+    initiateAlertFn: async (payload) => {
+      alertCalls.push(payload);
+      return {
+        contactsCalled: payload.contacts,
+        responseReceived: false,
+        policeCallInitiated: true,
+      };
+    },
+  });
+
+  const result = await identifyFaces({
+    userId: "user-1",
+    descriptors: [unitDescriptor()],
+  });
+
+  assert.equal(result.status, "Alert");
+  assert.equal(result.alertConfirmation.reason, "low_similarity");
+  assert.equal(alertCalls.length, 1);
+  assert.deepEqual(alertCalls[0].contacts, ["+911111111111"]);
+  assert.equal(logModel.rows.length, 1);
+  assert.equal(logModel.rows[0].status, "Alert");
 });

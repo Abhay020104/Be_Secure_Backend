@@ -13,6 +13,8 @@ const {
 } = require("../utils/faceMatcher");
 
 const DAY_IN_MS = 24 * 60 * 60 * 1000;
+const DEFAULT_ALERT_CONFIRMATION_MIN_SIMILARITY = 0.55;
+const DEFAULT_ALERT_CONFIRMATION_REQUIRED_HITS = 3;
 
 const getNumericEnv = (name, fallbackValue) => {
   const configuredValue = Number(process.env[name]);
@@ -29,6 +31,12 @@ const getFaceMatchThresholdBuffer = () =>
 
 const getFaceMatchMinSimilarity = () =>
   getNumericEnv("FACE_MATCH_MIN_SIMILARITY", DEFAULT_FACE_MATCH_MIN_SIMILARITY);
+
+const getAlertConfirmationMinSimilarity = () =>
+  getNumericEnv("ALERT_CONFIRMATION_MIN_SIMILARITY", DEFAULT_ALERT_CONFIRMATION_MIN_SIMILARITY);
+
+const getAlertConfirmationRequiredHits = () =>
+  Math.max(1, Math.trunc(getNumericEnv("ALERT_CONFIRMATION_REQUIRED_HITS", DEFAULT_ALERT_CONFIRMATION_REQUIRED_HITS)));
 
 const areDescriptorsEqual = (leftDescriptor, rightDescriptor) =>
   Array.isArray(leftDescriptor) &&
@@ -84,12 +92,23 @@ const buildDecisionPayload = (result) => ({
   rejectedDueToAmbiguity: result.rejectedDueToAmbiguity,
 });
 
+const getBestUnknownSimilarity = (unknownFace) => {
+  const similarities = [
+    unknownFace.residentDecision.bestSimilarity,
+    unknownFace.visitorDecision.bestSimilarity,
+  ].filter((value) => typeof value === "number");
+
+  return similarities.length ? Math.max(...similarities) : null;
+};
+
 const createIdentificationService = ({
   ResidentModel = Resident,
   VisitorModel = Visitor,
   LogModel = Log,
   initiateAlertFn = initiateAlert,
 } = {}) => {
+  const pendingAlertConfirmations = new Map();
+
   const createEntryLog = async (ownerId, screenshotUrl) => {
     await LogModel.create({
       owner: ownerId,
@@ -132,6 +151,8 @@ const createIdentificationService = ({
       thresholdBuffer,
       minSimilarity,
     };
+    const alertConfirmationMinSimilarity = getAlertConfirmationMinSimilarity();
+    const alertConfirmationRequiredHits = getAlertConfirmationRequiredHits();
 
     const [residents, validVisitors, allVisitors] = await Promise.all([
       ResidentModel.find({ owner: userId }),
@@ -205,7 +226,14 @@ const createIdentificationService = ({
 
     const promotedVisitors = [];
     let alertResult = null;
+    let alertConfirmation = null;
     let finalStatus = "NoAction";
+    const pendingKey = String(userId);
+    const hasKnownMatches = residentMatches.length > 0 || visitorMatches.length > 0;
+
+    if (hasKnownMatches) {
+      pendingAlertConfirmations.delete(pendingKey);
+    }
 
     if (residentMatches.length > 0 && unknownFaces.length > 0) {
       for (const unknownFace of unknownFaces) {
@@ -266,18 +294,63 @@ const createIdentificationService = ({
 
       await createEntryLog(userId, screenshotUrl);
       finalStatus = "Entry";
-    } else if (unknownFaces.length > 0) {
-      const emergencyContacts = residents.flatMap((resident) => resident.emergencyContacts);
-      alertResult = await initiateAlertFn({
-        contacts: emergencyContacts,
-        unknownCount: unknownFaces.length,
-      });
+    } else if (unknownFaces.length > 0 && !hasKnownMatches) {
+      const confirmationSimilarities = unknownFaces.map(getBestUnknownSimilarity);
+      const shouldAlertImmediately = confirmationSimilarities.some(
+        (similarity) => typeof similarity !== "number" || similarity < alertConfirmationMinSimilarity
+      );
+      let shouldTriggerAlert = shouldAlertImmediately;
 
-      await createAlertLog(userId, screenshotUrl);
-      finalStatus = "Alert";
-    } else if (residentMatches.length > 0 || visitorMatches.length > 0) {
+      if (shouldAlertImmediately) {
+        pendingAlertConfirmations.delete(pendingKey);
+        alertConfirmation = {
+          pending: false,
+          triggered: true,
+          reason: "low_similarity",
+          hits: alertConfirmationRequiredHits,
+          requiredHits: alertConfirmationRequiredHits,
+          minSimilarity: alertConfirmationMinSimilarity,
+          similarities: confirmationSimilarities,
+        };
+      } else {
+        const previousConfirmation = pendingAlertConfirmations.get(pendingKey);
+        const hits = (previousConfirmation?.hits || 0) + 1;
+        shouldTriggerAlert = hits >= alertConfirmationRequiredHits;
+
+        alertConfirmation = {
+          pending: !shouldTriggerAlert,
+          triggered: shouldTriggerAlert,
+          reason: "similarity_confirmation",
+          hits,
+          requiredHits: alertConfirmationRequiredHits,
+          minSimilarity: alertConfirmationMinSimilarity,
+          similarities: confirmationSimilarities,
+        };
+
+        if (shouldTriggerAlert) {
+          pendingAlertConfirmations.delete(pendingKey);
+        } else {
+          pendingAlertConfirmations.set(pendingKey, {
+            hits,
+          });
+        }
+      }
+
+      if (shouldTriggerAlert) {
+        const emergencyContacts = residents.flatMap((resident) => resident.emergencyContacts);
+        alertResult = await initiateAlertFn({
+          contacts: emergencyContacts,
+          unknownCount: unknownFaces.length,
+        });
+
+        await createAlertLog(userId, screenshotUrl);
+        finalStatus = "Alert";
+      }
+    } else if (hasKnownMatches) {
       await createEntryLog(userId, screenshotUrl);
       finalStatus = "Entry";
+    } else {
+      pendingAlertConfirmations.delete(pendingKey);
     }
 
     return {
@@ -286,10 +359,13 @@ const createIdentificationService = ({
       ambiguityMargin,
       thresholdBuffer,
       minSimilarity,
+      alertConfirmationMinSimilarity,
+      alertConfirmationRequiredHits,
       residents: residentMatches,
       visitors: visitorMatches,
       promotedVisitors,
       alert: alertResult,
+      alertConfirmation,
       diagnostics,
       summary: {
         totalFaces: normalizedDescriptors.length,
@@ -298,6 +374,7 @@ const createIdentificationService = ({
         unknownFacesInFrame: unknownFaces.length,
         promotedVisitors: promotedVisitors.length,
         ambiguousFacesRejected: unknownFaces.filter((face) => face.rejectedDueToAmbiguity).length,
+        alertConfirmation,
       },
     };
   };
