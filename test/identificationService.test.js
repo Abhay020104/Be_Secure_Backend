@@ -2,6 +2,10 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 const { createIdentificationService } = require("../src/services/identificationService");
+const { FACE_DESCRIPTOR_SIZE } = require("../src/utils/faceMatcher");
+
+const descriptor = (firstValue = 0) =>
+  [firstValue, ...Array.from({ length: FACE_DESCRIPTOR_SIZE - 1 }, () => 0)];
 
 const createDoc = (document) => ({
   ...document,
@@ -55,14 +59,14 @@ test("identifyFaces scopes residents, visitors, and logs to the authenticated us
       _id: "resident-owned",
       owner: "user-1",
       name: "Owner Resident",
-      faceDescriptors: [[0.2], [0]],
+      faceDescriptors: [descriptor(0.2), descriptor(0)],
       emergencyContacts: ["+911111111111"],
     },
     {
       _id: "resident-other-user",
       owner: "user-2",
       name: "Other Resident",
-      faceDescriptors: [[0.01]],
+      faceDescriptors: [descriptor(0.01)],
       emergencyContacts: ["+922222222222"],
     },
   ]);
@@ -80,7 +84,7 @@ test("identifyFaces scopes residents, visitors, and logs to the authenticated us
 
   const result = await identifyFaces({
     userId: "user-1",
-    descriptors: [[0]],
+    descriptors: [descriptor(0)],
   });
 
   assert.equal(result.status, "Entry");
@@ -110,7 +114,7 @@ test("identifyFaces does not promote ambiguous unknown faces when a resident is 
       _id: "resident-owned",
       owner: "user-1",
       name: "Owner Resident",
-      faceDescriptors: [[0]],
+      faceDescriptors: [descriptor(0)],
       emergencyContacts: ["+911111111111"],
     },
   ]);
@@ -118,14 +122,14 @@ test("identifyFaces does not promote ambiguous unknown faces when a resident is 
     {
       _id: "visitor-a",
       owner: "user-1",
-      faceDescriptors: [[1]],
+      faceDescriptors: [descriptor(1)],
       expiresAt: new Date(Date.now() + 60_000),
       lastSeenWithResident: new Date(),
     },
     {
       _id: "visitor-b",
       owner: "user-1",
-      faceDescriptors: [[1.03]],
+      faceDescriptors: [descriptor(1.03)],
       expiresAt: new Date(Date.now() + 60_000),
       lastSeenWithResident: new Date(),
     },
@@ -143,7 +147,7 @@ test("identifyFaces does not promote ambiguous unknown faces when a resident is 
 
   const result = await identifyFaces({
     userId: "user-1",
-    descriptors: [[0], [1.01]],
+    descriptors: [descriptor(0), descriptor(1.01)],
   });
 
   assert.equal(result.status, "Entry");

@@ -1,15 +1,18 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { evaluateMatch } = require("../src/utils/faceMatcher");
+const { evaluateMatch, FACE_DESCRIPTOR_SIZE } = require("../src/utils/faceMatcher");
+
+const descriptor = (firstValue = 0) =>
+  [firstValue, ...Array.from({ length: FACE_DESCRIPTOR_SIZE - 1 }, () => 0)];
 
 test("accepts a clear best match across multiple stored descriptors", () => {
   const records = [
-    { _id: "resident-a", faceDescriptors: [[0.25], [0.02]] },
-    { _id: "resident-b", faceDescriptors: [[0.4]] },
+    { _id: "resident-a", faceDescriptors: [descriptor(0.25), descriptor(0.02)] },
+    { _id: "resident-b", faceDescriptors: [descriptor(0.4)] },
   ];
 
-  const result = evaluateMatch(records, [0], {
+  const result = evaluateMatch(records, descriptor(0), {
     threshold: 0.5,
     margin: 0.05,
     thresholdBuffer: 0.02,
@@ -23,11 +26,11 @@ test("accepts a clear best match across multiple stored descriptors", () => {
 
 test("rejects an ambiguous match when the second-best candidate is too close", () => {
   const records = [
-    { _id: "resident-a", faceDescriptor: [0.1] },
-    { _id: "resident-b", faceDescriptor: [0.12] },
+    { _id: "resident-a", faceDescriptor: descriptor(0.1) },
+    { _id: "resident-b", faceDescriptor: descriptor(0.12) },
   ];
 
-  const result = evaluateMatch(records, [0], {
+  const result = evaluateMatch(records, descriptor(0), {
     threshold: 0.5,
     margin: 0.05,
     thresholdBuffer: 0.02,
@@ -40,9 +43,9 @@ test("rejects an ambiguous match when the second-best candidate is too close", (
 });
 
 test("rejects matches that only pass the loose threshold but fail the safety buffer", () => {
-  const records = [{ _id: "resident-a", faceDescriptor: [0.47] }];
+  const records = [{ _id: "resident-a", faceDescriptor: descriptor(0.47) }];
 
-  const result = evaluateMatch(records, [0], {
+  const result = evaluateMatch(records, descriptor(0), {
     threshold: 0.48,
     margin: 0.05,
     thresholdBuffer: 0.02,

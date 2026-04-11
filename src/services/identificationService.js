@@ -6,6 +6,7 @@ const {
   DEFAULT_FACE_MATCH_THRESHOLD,
   DEFAULT_FACE_MATCH_MARGIN,
   DEFAULT_FACE_MATCH_THRESHOLD_BUFFER,
+  DEFAULT_FACE_MATCH_MIN_SIMILARITY,
   evaluateMatch,
   getRecordDescriptors,
   normalizeDescriptor,
@@ -25,6 +26,9 @@ const getFaceMatchMargin = () => getNumericEnv("FACE_MATCH_MARGIN", DEFAULT_FACE
 
 const getFaceMatchThresholdBuffer = () =>
   getNumericEnv("FACE_MATCH_THRESHOLD_BUFFER", DEFAULT_FACE_MATCH_THRESHOLD_BUFFER);
+
+const getFaceMatchMinSimilarity = () =>
+  getNumericEnv("FACE_MATCH_MIN_SIMILARITY", DEFAULT_FACE_MATCH_MIN_SIMILARITY);
 
 const areDescriptorsEqual = (leftDescriptor, rightDescriptor) =>
   Array.isArray(leftDescriptor) &&
@@ -49,9 +53,34 @@ const buildDecisionPayload = (result) => ({
   acceptedMatchDistance: result.accepted ? result.bestDistance : null,
   bestDistance: result.bestDistance,
   secondBestDistance: result.secondBestDistance,
+  bestSimilarity: result.bestSimilarity,
+  secondBestSimilarity: result.secondBestSimilarity,
+  closestMatch: result.closestRecord
+    ? {
+        id: result.closestRecord._id,
+        label: result.closestRecord.name || String(result.closestRecord._id),
+        distance: result.bestDistance,
+        similarityPercent:
+          typeof result.bestSimilarity === "number"
+            ? Math.max(0, Math.min(100, result.bestSimilarity * 100))
+            : null,
+      }
+    : null,
+  secondClosestMatch: result.secondClosestRecord
+    ? {
+        id: result.secondClosestRecord._id,
+        label: result.secondClosestRecord.name || String(result.secondClosestRecord._id),
+        distance: result.secondBestDistance,
+        similarityPercent:
+          typeof result.secondBestSimilarity === "number"
+            ? Math.max(0, Math.min(100, result.secondBestSimilarity * 100))
+            : null,
+      }
+    : null,
   gap: result.gap,
   rejectedDueToThreshold: result.rejectedDueToThreshold,
   rejectedDueToThresholdBuffer: result.rejectedDueToThresholdBuffer,
+  rejectedDueToSimilarity: result.rejectedDueToSimilarity,
   rejectedDueToAmbiguity: result.rejectedDueToAmbiguity,
 });
 
@@ -96,10 +125,12 @@ const createIdentificationService = ({
     const threshold = getFaceMatchThreshold();
     const ambiguityMargin = getFaceMatchMargin();
     const thresholdBuffer = getFaceMatchThresholdBuffer();
+    const minSimilarity = getFaceMatchMinSimilarity();
     const matchingOptions = {
       threshold,
       margin: ambiguityMargin,
       thresholdBuffer,
+      minSimilarity,
     };
 
     const [residents, validVisitors, allVisitors] = await Promise.all([
@@ -254,6 +285,7 @@ const createIdentificationService = ({
       threshold,
       ambiguityMargin,
       thresholdBuffer,
+      minSimilarity,
       residents: residentMatches,
       visitors: visitorMatches,
       promotedVisitors,

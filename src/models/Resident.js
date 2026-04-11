@@ -1,7 +1,10 @@
 const mongoose = require("mongoose");
+const { FACE_DESCRIPTOR_SIZE } = require("../utils/faceMatcher");
 
 const descriptorValidator = (value) =>
-  Array.isArray(value) && value.length > 0 && value.every((item) => typeof item === "number");
+  Array.isArray(value) &&
+  value.length === FACE_DESCRIPTOR_SIZE &&
+  value.every((item) => typeof item === "number" && Number.isFinite(item));
 
 const descriptorSetValidator = (value) =>
   Array.isArray(value) && value.length > 0 && value.every(descriptorValidator);
@@ -22,7 +25,7 @@ const residentSchema = new mongoose.Schema(
       type: [Number],
       validate: {
         validator: (value) => value == null || descriptorValidator(value),
-        message: "faceDescriptor must be a non-empty array of numbers.",
+        message: `faceDescriptor must be a ${FACE_DESCRIPTOR_SIZE}-length array of finite numbers.`,
       },
     },
     faceDescriptors: {
@@ -30,7 +33,7 @@ const residentSchema = new mongoose.Schema(
       default: undefined,
       validate: {
         validator: (value) => value == null || descriptorSetValidator(value),
-        message: "faceDescriptors must be a non-empty array of face descriptor arrays.",
+        message: `faceDescriptors must be a non-empty array of ${FACE_DESCRIPTOR_SIZE}-length descriptor arrays.`,
       },
     },
     emergencyContacts: {
