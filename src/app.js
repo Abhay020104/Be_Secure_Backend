@@ -15,10 +15,14 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: "2mb" }));
 app.use(morgan("dev"));
-app.use(express.static("src/public"));
 
 app.get("/", (req, res) => {
-  res.sendFile(require("path").join(process.cwd(), "src/public/index.html"));
+  res.json({
+    success: true,
+    message: "Security camera backend is running.",
+    docs: "/api/docs",
+    health: "/api/health",
+  });
 });
 
 app.get("/api/health", (req, res) => {
